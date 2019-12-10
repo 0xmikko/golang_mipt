@@ -1,4 +1,4 @@
-package main
+package hw3
 
 import (
 	"fmt"
@@ -20,14 +20,14 @@ func SingleHash(in, out chan interface{}) {
 
 		data := strconv.Itoa(val.(int))
 
-		go func (data string, out chan interface{}) {
+		go func(data string, out chan interface{}) {
 			defer wg.Done()
 
 			crc32 := crc32worker(data)
 			md5chan := md5worker(data, quota)
 			crc32md5 := crc32worker(<-md5chan)
 
-			result := <- crc32 + "~" + <-crc32md5
+			result := <-crc32 + "~" + <-crc32md5
 
 			out <- result
 
@@ -38,24 +38,22 @@ func SingleHash(in, out chan interface{}) {
 	wg.Wait()
 }
 
-
 func md5worker(data string, quota chan struct{}) chan string {
 	out := make(chan string, 1)
-	go func(out chan <- string) {
+	go func(out chan<- string) {
 		quota <- struct{}{}
 
 		out <- DataSignerMd5(data)
 
-		<- quota
+		<-quota
 	}(out)
 
 	return out
 }
 
-
 func crc32worker(data string) chan string {
 	out := make(chan string, 1)
-	go func(out chan <- string) {
+	go func(out chan<- string) {
 		out <- DataSignerCrc32(data)
 	}(out)
 	return out
@@ -98,7 +96,7 @@ func MultiHash(in, out chan interface{}) {
 		fmt.Println("Multi Hash got ", val)
 
 		data := val.(string)
-		
+
 		wg.Add(1)
 		go func(data string, out chan interface{}) {
 			defer wg.Done()
@@ -131,7 +129,6 @@ func CombineResults(in, out chan interface{}) {
 	out <- result
 }
 
-
 func ExecutePipeline(jobs ...job) {
 
 	wg := &sync.WaitGroup{}
@@ -147,7 +144,7 @@ func ExecutePipeline(jobs ...job) {
 			defer wg.Done()
 			j(in, out)
 			close(out)
-		} (newJob, in, out)
+		}(newJob, in, out)
 
 		// Swap channels
 		in = out
