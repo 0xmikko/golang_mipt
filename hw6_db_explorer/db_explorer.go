@@ -25,6 +25,7 @@ func isInArray(needle string, array []string) bool {
 // ERRORS
 var (
 	ErrorUnknownTable = errors.New("unknown table")
+	ErrorNoItemFound  = errors.New("record not found")
 )
 
 // TABLE
@@ -44,7 +45,7 @@ type Table struct {
 }
 
 type TableI interface {
-	//FindByID(id string) ([]map[string]interface{}, error)
+	FindByID(id string) (map[string]interface{}, error)
 	GetListData(offset, limit int) ([]map[string]interface{}, error)
 }
 
@@ -93,13 +94,34 @@ func NewTable(db *sql.DB, table string) TableI {
 
 func (s *Table) GetListData(offset, limit int) ([]map[string]interface{}, error) {
 
-	result := make([]map[string]interface{}, 0)
-
 	basicQuery := fmt.Sprintf("SELECT * FROM `%s` LIMIT ? OFFSET ? ;", s.table)
 	rows, err := s.db.Query(basicQuery, limit, offset)
 	if err != nil {
 		return nil, err
 	}
+
+	return s.getRows(rows)
+}
+
+func (s *Table) FindByID(id string) (map[string]interface{}, error) {
+	basicQuery := fmt.Sprintf("SELECT * FROM `%s` WHERE id = ? ;", s.table)
+	rows, err := s.db.Query(basicQuery, id)
+	if err != nil {
+		return nil, err
+	}
+
+	results, err := s.getRows(rows)
+	if len(results) == 0 {
+		return nil, ErrorNoItemFound
+	}
+
+	return results[0], nil
+
+}
+
+// Returns data by ready rows request and format them into map[string]interface{}
+func (s *Table) getRows(rows *sql.Rows) ([]map[string]interface{}, error) {
+	result := make([]map[string]interface{}, 0)
 	defer rows.Close()
 
 	for rows.Next() {
@@ -171,7 +193,7 @@ func (s *Table) GetListData(offset, limit int) ([]map[string]interface{}, error)
 
 		result = append(result, mapResponse)
 	}
-	if err = rows.Err(); err != nil {
+	if err := rows.Err(); err != nil {
 		log.Print("Error loading tables signature for", err)
 	}
 
@@ -188,6 +210,7 @@ type Store struct {
 type StoreI interface {
 	GetTablesList() []string
 	GetListData(table string, offset, limit int) ([]map[string]interface{}, error)
+	FindByID(table string, id string) (map[string]interface{}, error)
 }
 
 func NewStore(db *sql.DB) StoreI {
@@ -265,6 +288,15 @@ func (s *Store) GetListData(table string, offset, limit int) ([]map[string]inter
 	return s.tables[table].GetListData(offset, limit)
 }
 
+func (s *Store) FindByID(table string, id string) (map[string]interface{}, error) {
+	err := s.isTableExists(table)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.tables[table].FindByID(id)
+}
+
 //
 // HANDLERS
 //
@@ -313,6 +345,8 @@ func JSONError(w http.ResponseWriter, e error) {
 	if !ok {
 		switch e {
 		case ErrorUnknownTable:
+			fallthrough
+		case ErrorNoItemFound:
 			ae = ApiError{
 				HTTPStatus: http.StatusNotFound,
 				Err:        e,
@@ -455,8 +489,15 @@ func (d *Explorer) GetListByOffsetAndLimitHandler(w http.ResponseWriter, r *http
 }
 
 func (d *Explorer) GetElementByIdHandler(w http.ResponseWriter, r *http.Request, table, id string) {
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Got request for " + table + "  " + id))
+	var err error
+	results := make(map[string]interface{})
+	results["record"], err = d.s.FindByID(table, id)
+	if err != nil {
+		JSONError(w, err)
+		return
+	}
+
+	JSONOK(w, results)
 }
 
 // PUT /$table - создаёт новую запись, данный по записи в теле запроса (POST-параметры)
