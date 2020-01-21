@@ -1,0 +1,15 @@
+GET localhost:8082/
+
+###
+GET localhost:8082/items/
+
+###
+PUT localhost:8082/items
+
+###
+POST localhost:8082/items/2
+
+###
+DELETE localhost:8082/items/2
+
+###
