@@ -105,7 +105,7 @@ func TestApis(t *testing.T) {
 	ts := httptest.NewServer(handler)
 
 	cases := []Case{
-		Case{
+		Case{ // 0
 			Path: "/", // список таблиц
 			Result: CR{
 				"response": CR{
@@ -113,14 +113,14 @@ func TestApis(t *testing.T) {
 				},
 			},
 		},
-		Case{
+		Case{ // 1
 			Path:   "/unknown_table",
 			Status: http.StatusNotFound,
 			Result: CR{
 				"error": "unknown table",
 			},
 		},
-		Case{
+		Case{ // 2
 			Path: "/items",
 			Result: CR{
 				"response": CR{
@@ -141,7 +141,7 @@ func TestApis(t *testing.T) {
 				},
 			},
 		},
-		Case{
+		Case{ // 3
 			Path:  "/items",
 			Query: "limit=1",
 			Result: CR{
@@ -157,7 +157,7 @@ func TestApis(t *testing.T) {
 				},
 			},
 		},
-		Case{
+		Case{ // 4
 			Path:  "/items",
 			Query: "limit=1&offset=1",
 			Result: CR{
@@ -173,7 +173,7 @@ func TestApis(t *testing.T) {
 				},
 			},
 		},
-		Case{
+		Case{ // 5
 			Path: "/items/1",
 			Result: CR{
 				"response": CR{
@@ -186,7 +186,7 @@ func TestApis(t *testing.T) {
 				},
 			},
 		},
-		Case{
+		Case{ // 6
 			Path:   "/items/100500",
 			Status: http.StatusNotFound,
 			Result: CR{
