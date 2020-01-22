@@ -15,6 +15,12 @@ Content-Type: application/json
 
 ###
 POST localhost:8082/items/2
+Content-Type: application/json
+
+{
+  "title":       42,
+  "description": ""
+}
 
 ###
 DELETE localhost:8082/items/2

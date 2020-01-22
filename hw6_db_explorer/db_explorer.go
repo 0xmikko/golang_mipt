@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 )
@@ -52,6 +53,7 @@ type TableI interface {
 	GetListData(offset, limit int) ([]map[string]interface{}, error)
 	InsertData(map[string]interface{}) (int64, error)
 	UpdateData(int64, map[string]interface{}) (int64, error)
+	Delete(id int64) (int64, error)
 }
 
 func NewTable(db *sql.DB, table string) TableI {
@@ -71,15 +73,21 @@ func NewTable(db *sql.DB, table string) TableI {
 	for rows.Next() {
 		var column Column
 		var Collation, Default sql.NullString
-		var Null, Key, Extra, Privileges, Comment string
+		var Type, Null, Key, Extra, Privileges, Comment string
 
-		err := rows.Scan(&column.Field, &column.Type, &Collation, &Null, &Key, &Default, &Extra, &Privileges, &Comment)
+		err := rows.Scan(&column.Field, &Type, &Collation, &Null, &Key, &Default, &Extra, &Privileges, &Comment)
 		if err != nil {
 			log.Fatal("Cant get table signature", err)
 		}
 
+		column.Type = strings.ToUpper(strings.Split(Type, "(")[0])
+
 		if Null == "YES" {
 			column.Null = true
+		}
+
+		if Key != "" {
+			column.Key = true
 		}
 
 		if strings.Contains(Extra, "auto_increment") {
@@ -245,7 +253,106 @@ func (s *Table) InsertData(data map[string]interface{}) (int64, error) {
 }
 
 func (s *Table) UpdateData(id int64, data map[string]interface{}) (int64, error) {
-	return 1, nil
+
+	query := fmt.Sprintf("UPDATE `%s` SET ", s.table)
+	values := make([]interface{}, 0)
+
+	firstVal := true
+	for _, field := range s.columns {
+
+		fname := field.Field
+		value, ok := data[fname]
+
+		if !ok {
+			continue
+		}
+
+		if field.Key {
+			return 0, ApiError{
+				HTTPStatus: http.StatusBadRequest,
+				Err:        errors.New("field " + field.Field + " have invalid type"),
+			}
+
+		}
+
+		if value == nil && !field.Null {
+			return 0, ApiError{
+				HTTPStatus: http.StatusBadRequest,
+				Err:        errors.New("field " + field.Field + " have invalid type"),
+			}
+		}
+
+		if value != nil {
+			valueType := reflect.TypeOf(value).String()
+			log.Println(field.Type, valueType)
+			switch field.Type {
+			case "INT":
+				fallthrough
+			case "SMALLINT":
+				fallthrough
+			case "TINYINT":
+				log.Println("QRE")
+				value, ok = value.(int)
+				if !ok {
+					return 0, ApiError{
+						HTTPStatus: http.StatusBadRequest,
+						Err:        errors.New("field " + field.Field + " have invalid type"),
+					}
+				}
+			case "FLOAT":
+				value, ok = value.(float32)
+				if !ok {
+					return 0, ApiError{
+						HTTPStatus: http.StatusBadRequest,
+						Err:        errors.New("field " + field.Field + " have invalid type"),
+					}
+				}
+
+			case "TEXT":
+				fallthrough
+			case "VARCHAR":
+				if valueType != "string" {
+					return 0, ApiError{
+						HTTPStatus: http.StatusBadRequest,
+						Err:        errors.New("field " + field.Field + " have invalid type"),
+					}
+				}
+			}
+
+		}
+
+		if ok {
+			values = append(values, value)
+			if !firstVal {
+				query += ", "
+			}
+			query += fname + "=?"
+			firstVal = false
+		}
+	}
+
+	query += " WHERE id=?"
+	values = append(values, id)
+	log.Printf("%+v\n", query)
+
+	result, err := s.db.Exec(query, values...)
+	if err != nil {
+		return 0, err
+	}
+
+	newID, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	log.Printf("UPDATED %+d\n", newID)
+
+	return newID, nil
+}
+
+func (s *Table) Delete(id int64) (int64, error) {
+	return 0, nil
+
 }
 
 // ****************************************************
@@ -262,6 +369,7 @@ type StoreI interface {
 	FindByID(table string, id int64) (map[string]interface{}, error)
 	InsertData(table string, data map[string]interface{}) (id int64, err error)
 	UpdateData(table string, id int64, data map[string]interface{}) (int64, error)
+	Delete(table string, id int64) (int64, error)
 }
 
 func NewStore(db *sql.DB) StoreI {
@@ -323,7 +431,7 @@ func (s *Store) isTableExists(table string) error {
 func (s *Store) GetTablesList() []string {
 	result := make([]string, len(s.tables))
 	i := 0
-	for key, _ := range s.tables {
+	for key := range s.tables {
 		result[i] = key
 		i++
 	}
@@ -366,6 +474,15 @@ func (s *Store) UpdateData(table string, id int64, data map[string]interface{}) 
 	return s.tables[table].UpdateData(id, data)
 }
 
+func (s *Store) Delete(table string, id int64) (int64, error) {
+	err := s.isTableExists(table)
+	if err != nil {
+		return 0, err
+	}
+
+	return s.tables[table].Delete(id)
+}
+
 //
 // HANDLERS
 //
@@ -398,13 +515,13 @@ func JSONOK(w http.ResponseWriter, result interface{}) {
 		Response: result,
 	}
 
-	json, err := json.Marshal(resp)
+	jsonResponse, err := json.Marshal(resp)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(`{"error":"cant unmarshal response"`))
 	}
 	w.WriteHeader(http.StatusOK)
-	w.Write(json)
+	w.Write(jsonResponse)
 
 }
 
@@ -628,6 +745,15 @@ func (d *Explorer) UpdateRowHandler(w http.ResponseWriter, r *http.Request, tabl
 
 // DELETE /$table/$id - удаляет запись
 func (d *Explorer) DeleteRowHandler(w http.ResponseWriter, r *http.Request, table string, id int64) {
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Delete New Row " + table + "  "))
+
+	results := make(map[string]interface{})
+	deleted, err := d.s.Delete(table, id)
+
+	if err != nil {
+		JSONError(w, err)
+		return
+	}
+
+	results["deleted"] = deleted
+	JSONOK(w, results)
 }
