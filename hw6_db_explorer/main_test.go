@@ -195,7 +195,7 @@ func TestApis(t *testing.T) {
 		},
 
 		// тут идёт создание и редактирование
-		Case{
+		Case{ //7
 			Path:   "/items/",
 			Method: http.MethodPut,
 			Body: CR{
@@ -212,7 +212,7 @@ func TestApis(t *testing.T) {
 		// это пример хрупкого теста
 		// если много раз вызывать один и тот же тест - записи будут добавляться
 		// поэтому придётся сделать сброс базы каждый раз в PrepareTestData
-		Case{
+		Case{ //8
 			Path: "/items/3",
 			Result: CR{
 				"response": CR{
@@ -225,7 +225,7 @@ func TestApis(t *testing.T) {
 				},
 			},
 		},
-		Case{
+		Case{ //9
 			Path:   "/items/3",
 			Method: http.MethodPost,
 			Body: CR{

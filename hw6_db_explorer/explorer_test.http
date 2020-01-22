@@ -5,6 +5,13 @@ GET localhost:8082/items/
 
 ###
 PUT localhost:8082/items
+Content-Type: application/json
+
+{
+  "id":          42,
+  "title":       "db_crud",
+  "description": ""
+}
 
 ###
 POST localhost:8082/items/2

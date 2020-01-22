@@ -24,12 +24,13 @@ func isInArray(needle string, array []string) bool {
 
 // ERRORS
 var (
-	ErrorUnknownTable = errors.New("unknown table")
-	ErrorNoItemFound  = errors.New("record not found")
+	ErrorUnknownTable    = errors.New("unknown table")
+	ErrorNoItemFound     = errors.New("record not found")
+	ErrorWrongParameters = errors.New("wrong parameters")
 )
 
 // TABLE
-// This struct manages all table SQL operations
+
 type Column struct {
 	Field         string
 	Type          string
@@ -38,15 +39,19 @@ type Column struct {
 	AutoIncrement bool
 }
 
+// This struct manages all table SQL operations
 type Table struct {
 	db      *sql.DB
 	table   string
 	columns []Column
+	key     string
 }
 
 type TableI interface {
-	FindByID(id string) (map[string]interface{}, error)
+	FindByID(id int64) (map[string]interface{}, error)
 	GetListData(offset, limit int) ([]map[string]interface{}, error)
+	InsertData(map[string]interface{}) (int64, error)
+	UpdateData(int64, map[string]interface{}) (int64, error)
 }
 
 func NewTable(db *sql.DB, table string) TableI {
@@ -103,7 +108,7 @@ func (s *Table) GetListData(offset, limit int) ([]map[string]interface{}, error)
 	return s.getRows(rows)
 }
 
-func (s *Table) FindByID(id string) (map[string]interface{}, error) {
+func (s *Table) FindByID(id int64) (map[string]interface{}, error) {
 	basicQuery := fmt.Sprintf("SELECT * FROM `%s` WHERE id = ? ;", s.table)
 	rows, err := s.db.Query(basicQuery, id)
 	if err != nil {
@@ -200,6 +205,50 @@ func (s *Table) getRows(rows *sql.Rows) ([]map[string]interface{}, error) {
 	return result, nil
 }
 
+func (s *Table) InsertData(data map[string]interface{}) (int64, error) {
+
+	query := fmt.Sprintf("INSERT INTO `%s` SET ", s.table)
+	values := make([]interface{}, 0)
+
+	firstVal := true
+	for _, field := range s.columns {
+		if field.AutoIncrement {
+			continue
+		}
+		fname := field.Field
+		value, ok := data[fname]
+		if ok {
+			values = append(values, value)
+			if !firstVal {
+				query += ", "
+			}
+			query += fname + "=?"
+			firstVal = false
+		}
+	}
+
+	log.Printf("%+v\n", query)
+
+	result, err := s.db.Exec(query, values...)
+	if err != nil {
+		return 0, err
+	}
+
+	newID, err := result.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+
+	log.Printf("%+d\n", newID)
+
+	return newID, nil
+}
+
+func (s *Table) UpdateData(id int64, data map[string]interface{}) (int64, error) {
+	return 1, nil
+}
+
+// ****************************************************
 // STORE
 
 type Store struct {
@@ -210,7 +259,9 @@ type Store struct {
 type StoreI interface {
 	GetTablesList() []string
 	GetListData(table string, offset, limit int) ([]map[string]interface{}, error)
-	FindByID(table string, id string) (map[string]interface{}, error)
+	FindByID(table string, id int64) (map[string]interface{}, error)
+	InsertData(table string, data map[string]interface{}) (id int64, err error)
+	UpdateData(table string, id int64, data map[string]interface{}) (int64, error)
 }
 
 func NewStore(db *sql.DB) StoreI {
@@ -288,13 +339,31 @@ func (s *Store) GetListData(table string, offset, limit int) ([]map[string]inter
 	return s.tables[table].GetListData(offset, limit)
 }
 
-func (s *Store) FindByID(table string, id string) (map[string]interface{}, error) {
+func (s *Store) FindByID(table string, id int64) (map[string]interface{}, error) {
 	err := s.isTableExists(table)
 	if err != nil {
 		return nil, err
 	}
 
 	return s.tables[table].FindByID(id)
+}
+
+func (s *Store) InsertData(table string, data map[string]interface{}) (id int64, err error) {
+	err = s.isTableExists(table)
+	if err != nil {
+		return 0, err
+	}
+
+	return s.tables[table].InsertData(data)
+}
+
+func (s *Store) UpdateData(table string, id int64, data map[string]interface{}) (int64, error) {
+	err := s.isTableExists(table)
+	if err != nil {
+		return 0, err
+	}
+
+	return s.tables[table].UpdateData(id, data)
 }
 
 //
@@ -352,6 +421,12 @@ func JSONError(w http.ResponseWriter, e error) {
 				Err:        e,
 			}
 
+		case ErrorWrongParameters:
+			ae = ApiError{
+				HTTPStatus: http.StatusBadRequest,
+				Err:        errors.New("Wrong parameters"),
+			}
+
 		default:
 
 			ae = ApiError{
@@ -366,25 +441,25 @@ func JSONError(w http.ResponseWriter, e error) {
 
 }
 
-func parseURL(url string, noIDneeded bool) (string, string, error) {
-	url = strings.TrimPrefix(url, "/")
+func parseURL(url string, noIDneeded bool) (string, int64, error) {
+	url = strings.Trim(url, "/")
 	if strings.Contains(url, "/") {
 		if noIDneeded {
-			return "", "", ApiError{
-				HTTPStatus: http.StatusBadRequest,
-				Err:        errors.New("Wrong parameters"),
-			}
+			return "", 0, ErrorWrongParameters
 		}
 		elms := strings.Split(url, "/")
 		if len(elms) < 2 {
-			return "", "", ApiError{
-				HTTPStatus: http.StatusBadRequest,
-				Err:        errors.New("Wrong parameters"),
-			}
+			return "", 0, ErrorWrongParameters
 		}
-		return elms[0], elms[1], nil
+
+		id, err := strconv.ParseInt(elms[1], 0, 64)
+		if err != nil {
+			return "", 0, ErrorWrongParameters
+		}
+
+		return elms[0], id, nil
 	}
-	return url, "", nil
+	return url, 0, nil
 }
 
 func getQueryParam(str, paramName string, defaultV int) (int, error) {
@@ -413,6 +488,13 @@ func getQueryParam(str, paramName string, defaultV int) (int, error) {
 	return value, nil
 }
 
+func getPostData(r *http.Request) (map[string]interface{}, error) {
+	decoder := json.NewDecoder(r.Body)
+	var data map[string]interface{}
+	err := decoder.Decode(&data)
+	return data, err
+}
+
 func (d *Explorer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
@@ -424,7 +506,7 @@ func (d *Explorer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			JSONError(w, err)
 		}
-		if id == "" {
+		if id == 0 {
 
 			offset, err := getQueryParam(r.URL.RawQuery, "offset", 0)
 			if err != nil {
@@ -488,7 +570,7 @@ func (d *Explorer) GetListByOffsetAndLimitHandler(w http.ResponseWriter, r *http
 	JSONOK(w, results)
 }
 
-func (d *Explorer) GetElementByIdHandler(w http.ResponseWriter, r *http.Request, table, id string) {
+func (d *Explorer) GetElementByIdHandler(w http.ResponseWriter, r *http.Request, table string, id int64) {
 	var err error
 	results := make(map[string]interface{})
 	results["record"], err = d.s.FindByID(table, id)
@@ -502,18 +584,50 @@ func (d *Explorer) GetElementByIdHandler(w http.ResponseWriter, r *http.Request,
 
 // PUT /$table - создаёт новую запись, данный по записи в теле запроса (POST-параметры)
 func (d *Explorer) InsertNewRowHandler(w http.ResponseWriter, r *http.Request, table string) {
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Create New Row " + table + "  "))
+	results := make(map[string]interface{})
+
+	data, err := getPostData(r)
+	if err != nil {
+		JSONError(w, err)
+		return
+	}
+
+	id, err := d.s.InsertData(table, data)
+	log.Println(table, id, err)
+
+	if err != nil {
+		JSONError(w, err)
+		return
+	}
+
+	results["id"] = id
+	JSONOK(w, results)
+
 }
 
 // POST /$table/$id - обновляет запись, данные приходят в теле запроса (POST-параметры)
-func (d *Explorer) UpdateRowHandler(w http.ResponseWriter, r *http.Request, table string, id string) {
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Update New Row " + table + "  " + id))
+func (d *Explorer) UpdateRowHandler(w http.ResponseWriter, r *http.Request, table string, id int64) {
+	results := make(map[string]interface{})
+
+	data, err := getPostData(r)
+	if err != nil {
+		JSONError(w, err)
+		return
+	}
+
+	updated, err := d.s.UpdateData(table, id, data)
+
+	if err != nil {
+		JSONError(w, err)
+		return
+	}
+
+	results["updated"] = updated
+	JSONOK(w, results)
 }
 
 // DELETE /$table/$id - удаляет запись
-func (d *Explorer) DeleteRowHandler(w http.ResponseWriter, r *http.Request, table string, id string) {
+func (d *Explorer) DeleteRowHandler(w http.ResponseWriter, r *http.Request, table string, id int64) {
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Delete New Row " + table + "  " + id))
+	w.Write([]byte("Delete New Row " + table + "  "))
 }
