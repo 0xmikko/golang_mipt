@@ -38,6 +38,7 @@ type Column struct {
 	Null          bool
 	Key           bool
 	AutoIncrement bool
+	Default       bool
 }
 
 // This struct manages all table SQL operations
@@ -50,9 +51,9 @@ type Table struct {
 
 type TableI interface {
 	FindByID(id int64) (map[string]interface{}, error)
-	GetListData(offset, limit int) ([]map[string]interface{}, error)
-	InsertData(map[string]interface{}) (int64, error)
-	UpdateData(int64, map[string]interface{}) (int64, error)
+	ListData(offset, limit int) ([]map[string]interface{}, error)
+	Insert(map[string]interface{}) (string, int64, error)
+	Update(int64, map[string]interface{}) (int64, error)
 	Delete(id int64) (int64, error)
 }
 
@@ -88,6 +89,7 @@ func NewTable(db *sql.DB, table string) TableI {
 
 		if Key != "" {
 			column.Key = true
+			newTable.key = column.Field
 		}
 
 		if strings.Contains(Extra, "auto_increment") {
@@ -105,7 +107,7 @@ func NewTable(db *sql.DB, table string) TableI {
 	return newTable
 }
 
-func (s *Table) GetListData(offset, limit int) ([]map[string]interface{}, error) {
+func (s *Table) ListData(offset, limit int) ([]map[string]interface{}, error) {
 
 	basicQuery := fmt.Sprintf("SELECT * FROM `%s` LIMIT ? OFFSET ? ;", s.table)
 	rows, err := s.db.Query(basicQuery, limit, offset)
@@ -117,7 +119,7 @@ func (s *Table) GetListData(offset, limit int) ([]map[string]interface{}, error)
 }
 
 func (s *Table) FindByID(id int64) (map[string]interface{}, error) {
-	basicQuery := fmt.Sprintf("SELECT * FROM `%s` WHERE id = ? ;", s.table)
+	basicQuery := fmt.Sprintf("SELECT * FROM `%s` WHERE %s = ? ;", s.table, s.key)
 	rows, err := s.db.Query(basicQuery, id)
 	if err != nil {
 		return nil, err
@@ -213,7 +215,7 @@ func (s *Table) getRows(rows *sql.Rows) ([]map[string]interface{}, error) {
 	return result, nil
 }
 
-func (s *Table) InsertData(data map[string]interface{}) (int64, error) {
+func (s *Table) Insert(data map[string]interface{}) (string, int64, error) {
 
 	query := fmt.Sprintf("INSERT INTO `%s` SET ", s.table)
 	values := make([]interface{}, 0)
@@ -227,32 +229,55 @@ func (s *Table) InsertData(data map[string]interface{}) (int64, error) {
 		value, ok := data[fname]
 		if ok {
 			values = append(values, value)
-			if !firstVal {
-				query += ", "
+
+		} else {
+			if field.Null {
+				values = append(values, nil)
+			} else {
+				switch field.Type {
+				case "INT":
+					fallthrough
+				case "SMALLINT":
+					fallthrough
+				case "TINYINT":
+					var vInt int
+					values = append(values, vInt)
+				case "TEXT":
+					fallthrough
+				case "VARCHAR":
+					var vString string
+					values = append(values, vString)
+				case "FLOAT":
+					var vFloat float64
+					values = append(values, vFloat)
+				}
 			}
-			query += fname + "=?"
-			firstVal = false
 		}
+		if !firstVal {
+			query += ", "
+		}
+		query += fname + "=? "
+		firstVal = false
 	}
 
 	log.Printf("%+v\n", query)
 
 	result, err := s.db.Exec(query, values...)
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
 
 	newID, err := result.LastInsertId()
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
 
 	log.Printf("%+d\n", newID)
 
-	return newID, nil
+	return s.key, newID, nil
 }
 
-func (s *Table) UpdateData(id int64, data map[string]interface{}) (int64, error) {
+func (s *Table) Update(id int64, data map[string]interface{}) (int64, error) {
 
 	query := fmt.Sprintf("UPDATE `%s` SET ", s.table)
 	values := make([]interface{}, 0)
@@ -267,6 +292,7 @@ func (s *Table) UpdateData(id int64, data map[string]interface{}) (int64, error)
 			continue
 		}
 
+		// IF POST HAS KEY UPDATE - THROW AN ERROR
 		if field.Key {
 			return 0, ApiError{
 				HTTPStatus: http.StatusBadRequest,
@@ -275,6 +301,7 @@ func (s *Table) UpdateData(id int64, data map[string]interface{}) (int64, error)
 
 		}
 
+		// NULL CASE
 		if value == nil && !field.Null {
 			return 0, ApiError{
 				HTTPStatus: http.StatusBadRequest,
@@ -331,7 +358,7 @@ func (s *Table) UpdateData(id int64, data map[string]interface{}) (int64, error)
 		}
 	}
 
-	query += " WHERE id=?"
+	query += fmt.Sprintf(" WHERE %s=?", s.key)
 	values = append(values, id)
 	log.Printf("%+v\n", query)
 
@@ -351,7 +378,17 @@ func (s *Table) UpdateData(id int64, data map[string]interface{}) (int64, error)
 }
 
 func (s *Table) Delete(id int64) (int64, error) {
-	return 0, nil
+	query := fmt.Sprintf("DELETE FROM `%s` WHERE %s=? ", s.table, s.key)
+	result, err := s.db.Exec(query, id)
+	if err != nil {
+		return 0, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return rowsAffected, nil
 
 }
 
@@ -367,7 +404,7 @@ type StoreI interface {
 	GetTablesList() []string
 	GetListData(table string, offset, limit int) ([]map[string]interface{}, error)
 	FindByID(table string, id int64) (map[string]interface{}, error)
-	InsertData(table string, data map[string]interface{}) (id int64, err error)
+	InsertData(table string, data map[string]interface{}) (idField string, id int64, err error)
 	UpdateData(table string, id int64, data map[string]interface{}) (int64, error)
 	Delete(table string, id int64) (int64, error)
 }
@@ -444,7 +481,7 @@ func (s *Store) GetListData(table string, offset, limit int) ([]map[string]inter
 		return nil, err
 	}
 
-	return s.tables[table].GetListData(offset, limit)
+	return s.tables[table].ListData(offset, limit)
 }
 
 func (s *Store) FindByID(table string, id int64) (map[string]interface{}, error) {
@@ -456,13 +493,13 @@ func (s *Store) FindByID(table string, id int64) (map[string]interface{}, error)
 	return s.tables[table].FindByID(id)
 }
 
-func (s *Store) InsertData(table string, data map[string]interface{}) (id int64, err error) {
+func (s *Store) InsertData(table string, data map[string]interface{}) (idField string, id int64, err error) {
 	err = s.isTableExists(table)
 	if err != nil {
-		return 0, err
+		return idField, 0, err
 	}
 
-	return s.tables[table].InsertData(data)
+	return s.tables[table].Insert(data)
 }
 
 func (s *Store) UpdateData(table string, id int64, data map[string]interface{}) (int64, error) {
@@ -471,7 +508,7 @@ func (s *Store) UpdateData(table string, id int64, data map[string]interface{}) 
 		return 0, err
 	}
 
-	return s.tables[table].UpdateData(id, data)
+	return s.tables[table].Update(id, data)
 }
 
 func (s *Store) Delete(table string, id int64) (int64, error) {
@@ -594,10 +631,7 @@ func getQueryParam(str, paramName string, defaultV int) (int, error) {
 	if ok {
 		value, err = strconv.Atoi(valueStr[0])
 		if err != nil {
-			return 0, ApiError{
-				HTTPStatus: http.StatusInternalServerError,
-				Err:        errors.New("Cant convert offset to int"),
-			}
+			return defaultV, nil
 		}
 	} else {
 		return defaultV, nil
@@ -709,7 +743,7 @@ func (d *Explorer) InsertNewRowHandler(w http.ResponseWriter, r *http.Request, t
 		return
 	}
 
-	id, err := d.s.InsertData(table, data)
+	idField, id, err := d.s.InsertData(table, data)
 	log.Println(table, id, err)
 
 	if err != nil {
@@ -717,7 +751,7 @@ func (d *Explorer) InsertNewRowHandler(w http.ResponseWriter, r *http.Request, t
 		return
 	}
 
-	results["id"] = id
+	results[idField] = id
 	JSONOK(w, results)
 
 }
